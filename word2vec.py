@@ -48,7 +48,7 @@ if __name__ == '__main__':
         sys.exit(1)
     inp, outp = sys.argv[1:3]
 
-    model = Word2Vec(preprocess(inp, logger), size = 400, window = 5, min_count = 5,
+    model = Word2Vec(LineSentence(inp), size = 400, window = 5, min_count = 5,
                      workers = multiprocessing.cpu_count())
 
     model.init_sims(replace=True)
