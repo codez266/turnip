@@ -82,11 +82,11 @@ def score(train, model, output, mode):
                     similarlist = compareProfession(person.lower(), list, model)
                 # TODO nationality
                 for i, s in enumerate(similarlist):
-                    out = out + prev + "\t" + list[i] + '\t' + str(s) + '\n'
-                outp.write(out.strip("\n"))
-                list = [data[1].lower()]
+                    out = out + prev + "\t" + list[i].strip() + '\t' + str(s) + '\n'
+                outp.write(out)
+                list = [data[1].lower().strip()]
             else:
-                list.append(data[1].lower())
+                list.append(data[1].lower().strip())
             prev = person
         file.close()
         outp.close()
