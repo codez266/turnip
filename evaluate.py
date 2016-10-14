@@ -1,12 +1,15 @@
 from gensim.models import Word2Vec
 import math
-import sys
+import argparse
+
+DATA_DIR = "data/"
+
 
 def getSimilarity(name, profession, model):
     try:
-        return model.similarity(name,profession)
+        return model.similarity(name, profession)
     except KeyError as e:
-        #print("Key error for: "+name)
+        # print("Key error for: "+name)
         return 0
 
 
@@ -16,14 +19,14 @@ def maplog(list):
     for s in list:
         if max < s:
             max = s
-    for i,s in enumerate(list):
+    for i, s in enumerate(list):
         if max != 0:
             if s > 0:
-                mapped.append( s / max )
-                mapped[i] = mapped[i] * ( 2**7 )
-                mapped[i] = int(math.log(mapped[i],2))
+                mapped.append(s / max)
+                mapped[i] = mapped[i] * (2**7)
+                mapped[i] = int(math.log(mapped[i], 2))
             else:
-                mapped.append( 0 )
+                mapped.append(0)
         else:
             mapped.append(s)
     return mapped
@@ -38,7 +41,7 @@ def maplin(list):
     for i, s in enumerate(list):
         if max != 0:
             if s > 0:
-                mapped.append( s / max )
+                mapped.append(s / max)
                 mapped[i] = int(mapped[i] * (7))
             else:
                 mapped.append(0)
@@ -62,8 +65,9 @@ def compareProfession(person, professions, model):
     return similarlist
 
 
-def listSimilar(train, model):
+def score(train, model, output, mode):
     model = Word2Vec.load(model)
+    outp = open(output + "/" + train.rsplit("/", 1)[1], 'w')
     with open(train) as file:
         list = []
         prev = None
@@ -72,17 +76,68 @@ def listSimilar(train, model):
             person = data[0]
             if person != prev and prev is not None:
                 out = ''
-                similarlist = compareProfession(person.lower(), list, model)
+                similarlist = []
+                # 0 for profession, 1 for nationality
+                if mode == 0:
+                    similarlist = compareProfession(person.lower(), list, model)
+                # TODO nationality
                 for i, s in enumerate(similarlist):
                     out = out + prev + "\t" + list[i] + '\t' + str(s) + '\n'
-                print(out.strip("\n"))
+                outp.write(out.strip("\n"))
                 list = [data[1].lower()]
             else:
                 list.append(data[1].lower())
             prev = person
         file.close()
+        outp.close()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", help="Input directory", action="store_true")
+    parser.add_argument("input", help="Input directory value")
+
+    parser.add_argument("-o", help="Output directory", action="store_true")
+    parser.add_argument("output", help="Output directory value")
+    args = parser.parse_args()
+
+    model = 'wiki-vectors.model'
+
+    input = ""
+    output = ""
+    if args.i:
+        input = args.input
+    if args.o:
+        output = args.output
+
+    profession = []
+    nationality = []
+    with open(DATA_DIR+'profession.list') as file:
+        for line in file:
+            profession.append(line.strip())
+        file.close()
+
+    with open(DATA_DIR+'nationality.list') as file:
+        for line in file:
+            nationality.append(line.strip())
+        file.close()
+
+    isProfession = True
+    with open(input) as file:
+        for line in file:
+            data = line.split('\t')
+            entity = data[1].strip()
+            if entity in nationality:
+                isProfession = False
+            break
+        file.close()
+    if isProfession:
+        # call profession
+        score(input, model, output, 0)
+    else:
+        # call nationality
+        score(input, model, output, 1)
+
 
 if __name__ == '__main__':
-    train = sys.argv[1]
-    model = sys.argv[2]
-    listSimilar(train, model)
+    main()
