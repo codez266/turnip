@@ -112,12 +112,12 @@ def main():
 
     profession = []
     nationality = []
-    with open(DATA_DIR+'profession.list') as file:
+    with open(DATA_DIR+'professions') as file:
         for line in file:
             profession.append(line.strip())
         file.close()
 
-    with open(DATA_DIR+'nationality.list') as file:
+    with open(DATA_DIR+'nationalities') as file:
         for line in file:
             nationality.append(line.strip())
         file.close()
