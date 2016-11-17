@@ -64,6 +64,21 @@ def compareProfession(person, professions, model):
     similarlist = maplin(similarlist)
     return similarlist
 
+def getTopicData(ind_file,data_file):
+    ent = {}
+    with open(data_file) as f:
+        for line in f:
+            l = line.strip()
+            ent[l] = []
+    with open(ind_file) as f:
+        for line in ind_file:
+            p = line.strip()
+            topic = p[0]
+            words = p[2].split(",")
+            if topic in ent:
+                ent[topic] = words
+    return ent
+
 
 def score(train, model, output, mode):
     model = Word2Vec.load(model)
@@ -91,6 +106,14 @@ def score(train, model, output, mode):
         file.close()
         outp.close()
 
+def counting(ind_file, ent_file):
+    with open(ind_file) as f:
+        profs = getData(ent_file)
+        for line in f:
+            p = line.strip()
+            p = p.split("\t")
+            prof = p[0]
+            words = p[2].split(",")
 
 def main():
     parser = argparse.ArgumentParser()
