@@ -17,26 +17,21 @@ class Scorer(object):
         outp = open(out, 'w')
         for line in self.pairs:
             l = line
-            outp.write(l[0] + "\t" + l[1] + "\t" + l[2])
+            outp.write(l[0] + "\t" + l[1] + "\t" + str(l[2]) + "\n")
         outp.close()
 
-    @classmethod
-    def getTopicData(ind_file,data_file):
+    def getTopicData(self, ind_file):
         ent = {}
-        with open(data_file) as f:
-            for line in f:
-                l = line.strip()
-                ent[l] = []
         with open(ind_file) as f:
             for line in f:
                 p = line.strip().split("\t")
                 topic = p[0]
                 words = p[2].split(",")
-                if topic in ent:
+                if topic in self.topics:
                     ent[topic] = words
         return ent
     
-    @classmethod
+    @staticmethod
     def getTopics(data_file):
         topics = []
         with open(data_file) as f:
@@ -44,7 +39,7 @@ class Scorer(object):
                 topics.append(line.strip())
         return topics
 
-    @classmethod
+    @staticmethod
     def getPersonPairs(data_file):
         pairs = []
         with open(data_file) as f:
@@ -53,8 +48,8 @@ class Scorer(object):
                 pairs.append([l[0],l[1]])
         return pairs
 
-    @classmethod
-    def getWikipediaTexts(data_file, persons, mode):
+    @staticmethod
+    def getWikipediaTexts(data_file, persons):
         i = 0
         with open(data_file) as f:
             for line in f:
@@ -66,7 +61,7 @@ class Scorer(object):
                     break
         return persons
 
-    @classmethod
+    @staticmethod
     def maplog(list):
         max = -1
         mapped = []
@@ -85,7 +80,7 @@ class Scorer(object):
                 mapped.append(s)
         return mapped
 
-    @classmethod
+    @staticmethod
     def maplin(list):
         max = -1
         mapped = []
@@ -106,25 +101,50 @@ class Scorer(object):
 class CountScorer(Scorer):
     def __init__(self, topics, pairs, mode):
         super().__init__(topics, pairs, mode)
-    
+   
+    def testExtract(self):
+        self.persons = Scorer,getWikipediaTexts('../persons3', self.persons)
+        topicwords = Scorer.getTopicData('data/indicators-f')
+
     def score(self):
         self.persons = Scorer.getWikipediaTexts('../persons3', self.persons)
         dummy = ""
-        topicwords = Scorer.getTopicData('../indicators-f', 'data/professions')
+        topicwords = self.getTopicData('data/indicators-f')
+        i = 0
         for pair in self.pairs:
             per = pair[0]
+            #print(dummy,",",per)
             prof = pair[1]
             if dummy != per:
                 proflist = self.persons[per][self.mode]
                 scorelist = []
                 for p in proflist:
-                    words = topicwords[p]
-                    text = self.persons[per]['text']
-                    score = 0
-                    for w in text:
-                        if w in words
-                            score = score + 1
-                    scorelist.append(score)
+                    #print(p)
+                    if p in topicwords:
+                        words = [x.lower() for x in topicwords[p]]
+                        #print(words)
+                        #print("calculating for:", per, p)
+                        text = self.persons[per]['text']
+                        score = 0
+                        for w in text.split():
+                            if w in words:
+                                score = score + 1
+                        #print(score)
+                        scorelist.append(score)
+                    else:
+                        scorelist.append(0)
                 # all professions scored
                 scorelist = Scorer.maplin(scorelist)
+                # assign the scores to persons pair
+                for j in range(i, i + len(scorelist)):
+                    #print("Scoring %s, %s:%d",self.pairs[j][0], self.pairs[j][1],scorelist[j-i])
+                    self.pairs[j].append(scorelist[j-i])
+            dummy = per
+            i = i + 1
+        self.writeScore('data/profession.out')
+
+topics = Scorer.getTopics('data/professions')
+pairs = Scorer.getPersonPairs('data/profession.train')
+sc = CountScorer(topics, pairs, 'profession')
+sc.score()
 
