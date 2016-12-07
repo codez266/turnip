@@ -5,7 +5,7 @@ import os.path
 import sys
 import multiprocessing
 from gensim.models import Word2Vec
-import string
+import re
 
 class MySentences(object):
     def __init__(self, filename):
