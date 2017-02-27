@@ -16,6 +16,7 @@ class MySentences(object):
             textline = line.lower()
             text=re.sub(r'\[(.*?)\|(.*?)\]',r'\1',textline)
             text=re.sub(r'[\[\]\(\)\:"\.;\',]',r'', text)
+            text=re.sub(r'[0-9]*', r'', text)
             yield text.split()
 
 if __name__ == '__main__':

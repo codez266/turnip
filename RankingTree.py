@@ -57,7 +57,7 @@ def transform_pairwise(X, y):
         y = np.c_[y, np.ones(y.shape[0])]
     comb = itertools.combinations(range(X.shape[0]), 2)
     for k, (i, j) in enumerate(comb):
-        if y[i, 0] == y[j, 0] or y[i, 1] != y[j, 1]:
+        if y[i, 1] != y[j, 1]:
             # skip if same target or different group
             continue
         try:
@@ -125,6 +125,10 @@ class RankTree(RandomForestClassifier):
     #    else:
     #        raise ValueError("Must call fit() prior to predict()")
 
+    def predict(self, X, y):
+        X_trans, y_trans = transform_pairwise(X, y)
+        return super(RankTree, self).predict(X_trans)
+    
     def score(self, X, y):
         """
         Because we transformed into a pairwise problem, chance level is at 0.5

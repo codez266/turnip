@@ -16,6 +16,7 @@ import argparse
 import ranking
 import numpy as np
 import RankingTree
+from sklearn import svm
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import KFold
@@ -59,7 +60,7 @@ class Scorer(object):
     def loadWord2Vec(self):
         if not self.w2v:
             try:
-                self.w2v = Word2Vec.load('wiki.model')
+                self.w2v = Word2Vec.load('wikivec.model')
             except Exception:
                 self.logger.warn("message")
                 return False
@@ -70,7 +71,7 @@ class Scorer(object):
         outp = open(out, 'w')
         for line in self.pairs:
             l = line
-            outp.write(l[0] + "\t" + l[1] + "\t" + str(l[2]) + "\n")
+            outp.write(l[0] + "\t" + l[1] + "\t" + str(int(l[3])) + "\n")
         outp.close()
 
     def getTopicData(self, ind_file):
@@ -93,6 +94,27 @@ class Scorer(object):
                 topics.append(line.strip())
         return topics
 
+    def getMentions(self, data_file):
+        topics = [t.lower() for t in self.topics]
+        mentions = {}
+        for p in self.persons:
+            mentions[p.lower()] = {}
+            for prof in self.persons[p][self.mode]:
+                mentions[p.lower()][prof.lower()] = 0
+            mentions[p.lower()]['count'] = 0
+        with open(data_file) as f:
+            for line in f:
+                sent = line.strip().lower()
+                persons = re.findall(r"\[(.*?)\|(.*?)\]",sent)
+                for p in persons:
+                    if p[1] in mentions:
+                        mentions[p[1].replace('_', ' ')]['count'] = mentions[p[1]]['count'] + 1
+                for p in persons:
+                    if p[1] in mentions:
+                        for prof in mentions[p[1]]:
+                            mentions[p[1]][prof.lower()] = mentions[p[1]][prof.lower()] + sent.count(prof)
+        pickle.dump(mentions, open('data/mentions', 'wb'))
+    
     @staticmethod
     def getPersonPairs(data_file):
         pairs = []
@@ -201,7 +223,7 @@ class Scorer(object):
         return mapped
 
     @staticmethod
-    def maplin(list):
+    def maplin(list, limit):
         max = -1
         mapped = []
         for s in list:
@@ -211,7 +233,7 @@ class Scorer(object):
             if max != 0:
                 if s > 0:
                     mapped.append(s / max)
-                    mapped[i] = int(mapped[i] * (7))
+                    mapped[i] = int(mapped[i] * (limit))
                 else:
                     mapped.append(0)
             else:
@@ -319,7 +341,7 @@ class SVMScorer(CountComb):
     """
     def __init__(self, topics, pairs, mode):
         super().__init__(topics, pairs, mode)
-        self.num_features = 6
+        self.num_features = 5
 
     def count(self, per, article, words, normalize = True):
         text = article
@@ -412,7 +434,9 @@ class SVMScorer(CountComb):
     def feature3(self, per, entlist, topicwords):
         features = []
         for p in entlist:
-            features.append(self.vecAvg(per, topicwords[p]))
+            topics = []
+            topics.append(topicwords[p][0])
+            features.append(self.vecAvg(per, topics))
         return features
     
     def feature4(self, per, text, entlist, topicwords):
@@ -437,6 +461,36 @@ class SVMScorer(CountComb):
         features = [f / len(categories) for f in features]
         return features
     
+    def vectorAverage(self, sent):
+        v = np.zeros((1,400))
+        i = 0
+        for w in sent.lower().split():
+            try:
+                v = v + self.w2v[w]
+                i = i + 1
+            except Exception as e:
+                self.logger.exception("message") 
+        if i == 0:
+            self.logger.warn("No vector for: %s", sent)
+            return v
+        else:
+            return v / i
+
+    def feature6(self, per, entlist):
+        feature = np.zeros((1,800))
+        for p in entlist:
+            try:
+                vct = self.vectorAverage(p)
+                sanitized_person = self.sanitize(per)
+                pvct = self.vectorAverage(sanitized_person)
+                f = np.append(pvct,vct)
+                #pdb.set_trace()
+                feature = np.append(feature, [f], axis = 0)
+            except Exception as e:
+                feature = np.append(feature, np.zeros((1,800)), axis=0)
+        # remove first dummy zeros, transpose and return
+        return np.transpose(feature[1:,:])
+
     def makeFeatures(self, flush = False):
         """
         Feature matrix:
@@ -445,8 +499,8 @@ class SVMScorer(CountComb):
         .
         .
         """
-        if not flush and os.path.isfile('features.vec'):
-            return self.readFeaturesFromFile('features.vec')
+        #if not flush and os.path.isfile('features.vec'):
+        #    return self.readFeaturesFromFile('features.vec')
         
         self.persons = Scorer.getWikipediaTexts2(self.persons)
         dummy = ""
@@ -461,121 +515,22 @@ class SVMScorer(CountComb):
             if dummy != per:
                 entlist = self.persons[per][self.mode]
                 self.logger.info("Features for %s", per)
-                self.persons[per]['features'] = []
-                self.persons[per]['features'].append(self.feature0(per, self.persons[per]['opening_text'], entlist, topicwords))
-                self.persons[per]['features'].append(self.feature1(per, self.persons[per]['text'], entlist, topicwords))
-                self.persons[per]['features'].append(self.feature2(per, self.persons[per]['category'], entlist, topicwords))
-                self.persons[per]['features'].append(self.feature3(per, entlist, topicwords))
-                self.persons[per]['features'].append(self.feature4(per, self.persons[per]['opening_text'], entlist, topicwords))
-                self.persons[per]['features'].append(self.feature5(per, self.persons[per]['category'], entlist, topicwords))
-                # write these features    
+                self.persons[per]['features'] = np.zeros((1,len(entlist)))
+                if 'opening_text' in self.persons[per]:
+                    #self.persons[per]['features'] = np.append(self.persons[per]['features'], [self.feature0(per, self.persons[per]['opening_text'], entlist, topicwords)], axis = 0)
+                    self.persons[per]['features'] = np.append(self.persons[per]['features'], [self.feature1(per, self.persons[per]['text'], entlist, topicwords)], axis = 0)
+                    self.persons[per]['features'] = np.append(self.persons[per]['features'], [self.feature2(per, self.persons[per]['category'], entlist, topicwords)], axis = 0)
+                    #self.persons[per]['features'].append(self.feature3(per, entlist, topicwords))
+                    self.persons[per]['features'] = np.append(self.persons[per]['features'], [self.feature4(per, self.persons[per]['opening_text'], entlist, topicwords)], axis = 0)
+                    self.persons[per]['features'] = np.append(self.persons[per]['features'], [self.feature5(per, self.persons[per]['category'], entlist, topicwords)], axis = 0)
+                    self.persons[per]['features'] = np.append(self.persons[per]['features'], self.feature6(per, entlist), axis = 0)
+                    self.persons[per]['features'] = self.persons[per]['features'][1:,:]
+                    s = self.persons[per]['features']
+                # write these features
             dummy = per
             i = i + 1
-        self.writeFeatures('features.vec')
+        #self.writeFeatures('features.vec')
         return self.genFeatures(toString = False)
-
-    def multiclass(self):
-        X,Y = self.makeFeatures()
-        #pdb.set_trace()
-        X = np.asarray(X,dtype=np.float32)
-        Y = np.asarray(Y, dtype=np.int32)[:,0]
-        X_train, X_test, y_train, y_test = train_test_split(
-                    X, Y, test_size=0.75, random_state=0)
-        ovr=OneVsRestClassifier(LinearSVC(random_state=0)).fit(X_train, y_train)
-        print(ovr.score(X_test,y_test))
-    
-    def rf(self):
-        X,Y = self.makeFeatures()
-        X = np.asarray(X,dtype=np.float32)
-        Y = np.asarray(Y, dtype=np.int32)
-        y = Y[:,0]
-        group = Y[:,1]
-        gkf = GroupKFold(n_splits=6)
-        for train, test in gkf.split(X, y, groups=group):
-            rfc = RankingTree.RankTree(n_jobs=-1,max_features= 'sqrt' ,n_estimators=100, oob_score = True, min_samples_split=0.15)
-            rfc.fit(X[train], y[train])
-            print(rfc.score(X[test], y[test]))
-
-    def rfsearch(self):
-        X,Y = self.makeFeatures()
-        X = np.asarray(X,dtype=np.float32)
-        Y = np.asarray(Y, dtype=np.int32)
-        y = Y[:,0]
-        group = Y[:,1]
-        X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.75, random_state=0)
-        rfc = RankingTree.RankTree(n_jobs=-1,max_features= 'sqrt' ,n_estimators=50, oob_score = True)
-        tuned_parameters = [{'n_estimators':[10,100], 'max_features':['sqrt','log2'], 'min_samples_split':[0.05, 0.1, 0.15, 0.20]}]
-        CV_rfc = GridSearchCV(estimator=rfc, param_grid=tuned_parameters, cv= 5)
-        CV_rfc.fit(X_train, y_train)
-        means = CV_rfc.cv_results_['mean_test_score']
-        stds = CV_rfc.cv_results_['std_test_score']
-        print (CV_rfc.best_params_)
-        for mean, std, params in zip(means, stds, CV_rfc.cv_results_['params']):
-            print("%0.3f (+/-%0.03f) for %r"% (mean, std * 2, params))
-        print(CV_rfc.best_estimator_.feature_importances_)
-
-    def rankSVM(self):
-        X,Y = self.makeFeatures()
-        X = np.asarray(X,dtype=np.float32)
-        Y = np.asarray(Y, dtype=np.int32)
-        y = Y
-        group = Y[:,1]
-        gkf = GroupKFold(n_splits=10)
-        for train, test in gkf.split(X, y, groups=group):
-            svc = ranking.RankSVM(C=1e-1, kernel='rbf', gamma=10)
-            svc.fit(X[train], y[train])
-            print(svc.score(X[test], y[test]))
-    
-    def rank(self):
-        X,Y = self.makeFeatures()
-        #pdb.set_trace()
-        X = np.asarray(X,dtype=np.float32)
-        Y = np.asarray(Y, dtype=np.int32)
-        X_train, X_test, y_train, y_test = train_test_split(
-                    X, Y, test_size=0.75, random_state=0)
-        tuned_parameters = [{'kernel': ['rbf'], 'gamma': [1e-3,1e-2,1e-1,1,10],
-                                 'C': [1e-2,1e-1,1, 10, 100, 1000]},
-                {'kernel': ['linear'], 'C': [1, 10, 100, 1000]}]
-        clf = GridSearchCV(ranking.RankSVM(C=1), tuned_parameters, cv=5)
-        clf.fit(X_train, y_train)
-        print("Best parameters set found on development set:")
-        print(clf.best_params_)
-        print("Grid scores on development set:")
-        means = clf.cv_results_['mean_test_score']
-        stds = clf.cv_results_['std_test_score']
-        for mean, std, params in zip(means, stds, clf.cv_results_['params']):
-            print("%0.3f (+/-%0.03f) for %r"% (mean, std * 2, params))
-        be = clf.best_estimator_
-        #print("Detailed classification report:")
-        #pdb.set_trace()
-        #y_true, y_pred = y_test[0], clf.predict(X_test)
-        #print(classification_report(y_true, y_pred))
-        #kf = KFold(n_splits=5)
-        #for train, test in kf.split(X):
-        # make a simple plot out of it
-        #import pylab as pl
-        #pl.scatter(np.dot(X, true_coef), y)
-        #pl.title('Data to be learned')
-        #pl.xlabel('<X, coef>')
-        #pl.ylabel('y')
-        #pl.show()
-
-        # print the performance of ranking
-        #print(train) 
-        #rank_svm = ranking.RankSVM().fit(X[train], Y[train])
-        #rank_svm = ranking.RankSVM()
-        #scores = cross_val_score(rank_svm, X, y, cv=5)
-        #print ('Performance of ranking ', rank_svm.score(X[test], Y[test]))
-
-    def featureSelect(self):
-        X,y = self.makeFeatures()
-        X = np.asarray(X,dtype=np.float32)
-        y = np.asarray(y, dtype=np.int32)[:,0]
-        svc = ranking.RankSVM(kernel='linear', C=10)
-        rfecv = RFECV(estimator=svc, step=1, cv=StratifiedKFold(2))
-        rfecv.fit(X, y)
-        print("Optimal number of features : %d" % rfecv.n_features_)
 
     def writeFeatures(self, filename):
         outp = open(filename, 'w')
@@ -619,22 +574,26 @@ class SVMScorer(CountComb):
             if dummy != per:
                 features = self.persons[per]['features']
                 # Iterate over professions by scanning any row
-                for p in range(0, len(features[0])):
-                    args = []
-                    featurelist = []
-                    for f in range(0, len(features)):
-                        featurelist.append(features[f][p])
-                    if toString:
-                        args.append(self.pairs[j][2])
-                        args.append(i)
-                        args.extend(featurelist)
-                        args.append(per)
-                        formatted = line.format(*args)
-                        featureString = featureString + formatted
-                    else:
-                        y.append([self.pairs[j][2], i])
-                        X.append(featurelist)
-                    j = j + 1
+                if len(features) > 0:
+                    for p in range(0, len(features[0])):
+                        args = []
+                        featurelist = []
+                        for f in range(0, len(features)):
+                            featurelist.append(features[f][p])
+                        if toString:
+                            args.append(self.pairs[j][2])
+                            args.append(i)
+                            args.extend(featurelist)
+                            args.append(per)
+                            formatted = line.format(*args)
+                            featureString = featureString + formatted
+                        else:
+                            if len(featurelist) == 804:
+                                X.append(featurelist)
+                                if self.pairs[j][0] != per:
+                                    self.logger.warn("Not equal: %s, %s", self.pairs[j][0], per)
+                                y.append([self.pairs[j][2], i])
+                        j = j + 1
                 featureString = featureString + "#\n"
                 i = i + 1
             dummy = per
@@ -642,6 +601,249 @@ class SVMScorer(CountComb):
             return featureString
         else:
             return X,y
+
+    def multiclass(self):
+        X,Y = self.makeFeatures()
+        #pdb.set_trace()
+        X = np.asarray(X,dtype=np.float64)
+        Y = np.asarray(Y, dtype=np.int32)[:,0]
+        X_train, X_test, y_train, y_test = train_test_split(
+                    X, Y, test_size=0.75, random_state=0)
+        ovr=OneVsRestClassifier(LinearSVC(random_state=0)).fit(X_train, y_train)
+        print(ovr.score(X_test,y_test))
+    
+    def setHalfLabel(self, X, Y):
+        x1 = []
+        x2 = []
+        y1 = []
+        y2 = []
+        for i, y in enumerate(Y):
+            if(y[0] < 4):
+                if(y[0] < 2):
+                    y1.append(0)
+                else:
+                    y1.append(1)
+                x1.append(X[i])
+            else:
+                if(y[0] < 7):
+                    y2.append(0)
+                else:
+                    y2.append(1)
+                x2.append(X[i])
+        return x1,x2,y1,y2
+    
+    def rf(self):
+        X,Y = self.makeFeatures()
+        y = self.setLabel(Y)
+        X = np.asarray(X,dtype=np.float64)
+        Y = np.asarray(Y, dtype=np.int32)
+        X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=0.65, random_state=0)
+        #x1, x2, y1, y2 = self.setHalfLabel(X, Y)
+        #y = self.setLabel(Y)
+        #group = Y[:,1]
+        #gkf = GroupKFold(n_splits=6)
+        x1_train, x1_test, y1_train, y1_test = train_test_split( X, y, test_size=0.75, random_state=0)
+        #x2_train, x2_test, y2_train, y2_test = train_test_split( x2, y2, test_size=0.75, random_state=0)
+        rfc = RandomForestClassifier(n_jobs=-1,max_features= 'sqrt' ,n_estimators=10, oob_score = True, min_samples_split=0.05)
+        rfc.fit(x1_train, y1_train)
+        print(rfc.score(x1_test, y1_test))
+        y_out = rfc.predict(X)
+        Y[:,0] = y_out
+        ranks = self.relativeToAbsHalf(X, Y)
+        for i, j in enumerate(ranks):
+            self.pairs[i].append(j)
+        #rfc = RandomForestClassifier(n_jobs=-1,max_features= 'log2' ,n_estimators=10, oob_score = True, min_samples_split=0.2)
+        #rfc.fit(x2_train, y2_train)
+        #print(rfc.score(x2_test, y2_test))
+
+    def scoreSingle(self):
+        X,Y = self.makeFeatures()
+        y = self.relativeToAbs(X, Y)
+        for i, j in enumerate(y):
+            self.pairs[i].append(j)
+
+    def relativeToAbs(self, X, Y):
+        y_prev = -1
+        y_out = []
+        print(len(X))
+        print(len(Y))
+        for i, y in enumerate(Y):
+            if y_prev != y[1]:
+                y_out.append([])
+            y_out[-1].append(X[i][0])
+            y_prev = y[1]
+        ranks = []
+        for i,y in enumerate(y_out):
+            r = Scorer.maplin(y, 7)
+            for rank in r:
+                ranks.append(int(rank))
+        return ranks
+
+    def relativeToAbsHalf(self, X, Y):
+        y_out = []
+        y_prev = -1
+        for i, y in enumerate(Y):
+            if y_prev != y[1]:
+                y_out.append([[],[]])
+            if y[0] == 0:
+                y_out[-1][0].append(X[i][0])
+            else:
+                y_out[-1][1].append(X[i][0])
+            y_prev = y[1]
+        for i, y in enumerate(y_out):
+            y_out[i][0] = Scorer.maplin(y[0], 3)
+            y_out[i][1] = Scorer.maplin(y[1], 7)
+        ranks = []
+        y_prev = -1
+        i = -1
+        l1 = 0
+        l2 = 0
+        for j, y in enumerate(Y):
+            if y_prev != y[1]:
+                i = i + 1
+                l1 = 0
+                l2 = 0
+            if y[0] == 0:
+                ranks.append(y_out[i][0][l1])
+                l1 = l1 + 1
+            else:
+                try:
+                    ranks.append(y_out[i][1][l2])
+                    l2 = l2 + 1
+                except Exception:
+                    pdb.set_trace()
+            y_prev = y[1]
+        return ranks
+
+    def rfsearch(self):
+        X,Y = self.makeFeatures()
+        Y = self.setLabel(Y)
+        X = np.asarray(X,dtype=np.float32)
+        Y = np.asarray(Y, dtype=np.int32)
+        #x1, x2, y1, y2 = self.setHalfLabel(X, Y)
+        y = Y
+        #group = Y[:,1]
+        X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=0.75, random_state=0)
+        rfc = RankingTree.RankTree(n_jobs=-1,max_features= 'sqrt' ,n_estimators=50, oob_score = True)
+        tuned_parameters = [{'n_estimators':[10,100], 'max_features':['sqrt','log2'], 'min_samples_split':[0.05, 0.1, 0.15, 0.20]}]
+        CV_rfc = GridSearchCV(estimator=rfc, param_grid=tuned_parameters, cv= 5)
+        CV_rfc.fit(X_train, y_train)
+        means = CV_rfc.cv_results_['mean_test_score']
+        stds = CV_rfc.cv_results_['std_test_score']
+        print (CV_rfc.best_params_)
+        for mean, std, params in zip(means, stds, CV_rfc.cv_results_['params']):
+            print("%0.3f (+/-%0.03f) for %r"% (mean, std * 2, params))
+        print(CV_rfc.best_estimator_.feature_importances_)
+
+        #X_train, X_test, y_train, y_test = train_test_split(
+        #            x2, y2, test_size=0.75, random_state=0)
+        #rfc = RandomForestClassifier(n_jobs=-1,max_features= 'sqrt' ,n_estimators=50, oob_score = True)
+        #tuned_parameters = [{'n_estimators':[10,100], 'max_features':['sqrt','log2'], 'min_samples_split':[0.05, 0.1, 0.15, 0.20]}]
+        #CV_rfc = GridSearchCV(estimator=rfc, param_grid=tuned_parameters, cv= 5)
+        #CV_rfc.fit(X_train, y_train)
+        #means = CV_rfc.cv_results_['mean_test_score']
+        #stds = CV_rfc.cv_results_['std_test_score']
+        #print (CV_rfc.best_params_)
+        #for mean, std, params in zip(means, stds, CV_rfc.cv_results_['params']):
+        #    print("%0.3f (+/-%0.03f) for %r"% (mean, std * 2, params))
+        #print(CV_rfc.best_estimator_.feature_importances_)
+
+    def rankSVM(self):
+        X,Y = self.makeFeatures()
+        X = np.asarray(X,dtype=np.float32)
+        Y = np.asarray(Y, dtype=np.int32)
+        y = Y
+        group = Y[:,1]
+        gkf = GroupKFold(n_splits=10)
+        for train, test in gkf.split(X, y, groups=group):
+            svc = ranking.RankSVM(C=1e-1, kernel='rbf', gamma=10)
+            svc.fit(X[train], y[train])
+            print(svc.score(X[test], y[test]))
+
+    def svmRankingTrain(self):
+        X,Y = self.makeFeatures()
+        y = self.setLabel(Y)
+        X = np.asarray(X,dtype=np.float64)
+        Y = np.asarray(Y, dtype=np.int32)
+        group = Y[:,1]
+        X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=0.65, random_state=0)
+        svc = ranking.RankSVM(C=1e1, kernel='rbf', gamma=1)
+        svc.fit(X_train, y_train)
+        y_out = svc.predict(X)
+        Y[:,0] = y_out
+        ranks = self.relativeToAbsHalf(X, Y)
+        for i, j in enumerate(ranks):
+            self.pairs[i].append(j)
+
+    def svmRankingTest(self):
+        svc = pickle.load(open('svm.model', 'rb'))
+        X,Y = self.makeFeatures()
+        X = np.asarray(X,dtype=np.float32)
+        Y = np.asarray(Y, dtype=np.int32)
+        y = Y
+        print(svc.score(X, y))
+    
+    def setLabel(self, Y):
+        labels = []
+        for y in Y:
+            if int(y[0]) < 4:
+                labels.append(0)
+            else:
+                labels.append(1)
+        return labels
+    
+    def rank(self):
+        X,Y = self.makeFeatures()
+        Y = self.setLabel(Y)
+        X = np.asarray(X,dtype=np.float64)
+        Y = np.asarray(Y, dtype=np.int32)
+        X_train, X_test, y_train, y_test = train_test_split(
+                    X, Y, test_size=0.65, random_state=0)
+        tuned_parameters = [{'kernel': ['rbf', 'linear'], 'gamma': [1e-3,1e-2,1e-1,1,10],
+                                 'C': [1e-2,1e-1,1, 10, 100, 1000]},
+                {'kernel': ['linear'], 'C': [1, 10, 100, 1000]}]
+        clf = GridSearchCV(svm.SVC(), tuned_parameters, cv=5)
+        clf.fit(X_train, y_train)
+        print("Best parameters set found on development set:")
+        print(clf.best_params_)
+        print("Grid scores on development set:")
+        means = clf.cv_results_['mean_test_score']
+        stds = clf.cv_results_['std_test_score']
+        for mean, std, params in zip(means, stds, clf.cv_results_['params']):
+            print("%0.3f (+/-%0.03f) for %r"% (mean, std * 2, params))
+        be = clf.best_estimator_
+        #print("Detailed classification report:")
+        #pdb.set_trace()
+        #y_true, y_pred = y_test[0], clf.predict(X_test)
+        #print(classification_report(y_true, y_pred))
+        #kf = KFold(n_splits=5)
+        #for train, test in kf.split(X):
+        # make a simple plot out of it
+        #import pylab as pl
+        #pl.scatter(np.dot(X, true_coef), y)
+        #pl.title('Data to be learned')
+        #pl.xlabel('<X, coef>')
+        #pl.ylabel('y')
+        #pl.show()
+
+        # print the performance of ranking
+        #print(train) 
+        #rank_svm = ranking.RankSVM().fit(X[train], Y[train])
+        #rank_svm = ranking.RankSVM()
+        #scores = cross_val_score(rank_svm, X, y, cv=5)
+        #print ('Performance of ranking ', rank_svm.score(X[test], Y[test]))
+
+    def featureSelect(self):
+        X,y = self.makeFeatures()
+        X = np.asarray(X,dtype=np.float32)
+        y = np.asarray(y, dtype=np.int32)[:,0]
+        svc = ranking.RankSVM(kernel='linear', C=10)
+        rfecv = RFECV(estimator=svc, step=1, cv=StratifiedKFold(2))
+        rfecv.fit(X, y)
+        print("Optimal number of features : %d" % rfecv.n_features_)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -662,14 +864,20 @@ def main():
     logging.info("Getting topics")
     topics = Scorer.getTopics(input+'/professions')
     logging.info("Getting pairs")
-    pairs = Scorer.getPersonPairs(input+'/profession.train')
-    sc = SVMScorer(topics, pairs, 'profession')
+    pairs = Scorer.getPersonPairs(input+'/profession.all')
+    #pairstest = Scorer.getPersonPairs(input+'/profession.test') 
+    sc = SVMScorer(topics, (pairs), 'profession')
+    #sc.getMentions('data/wiki-sentences')
     #sc.makeFeatures(flush=True)
-    #sc.writeScore(output+'/profession.out')
+    #sc.scoreSingle()
+    #sc.svmRankingTrain()
+    sc.rf()
+    sc.writeScore(output+'/profession.out')
     #sc.rank()
+    #sc.rfsearch()
     #sc.featureSelect()
     #sc.writeFeatures()
     #sc.rf()
-    sc.rankSVM()
+    #sc.svmRankingTest()
 if __name__ == '__main__':
     main()
