@@ -5,9 +5,11 @@ import pdb, os, inflect, argparse
 from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
 from keras.models import Sequential
-from keras.layers import Dense, Dropout, Activation
-from keras.layers import Embedding, Flatten
-from keras.layers import Convolution1D, MaxPooling1D, Merge, GlobalMaxPooling1D
+from keras.layers import Dense, Dropout, Activation, Input
+from keras.layers import Embedding, Flatten, concatenate, Reshape
+from keras.layers import Convolution1D, MaxPooling1D, Merge, GlobalMaxPooling1D, Convolution2D, MaxPooling2D, GlobalMaxPooling2D
+from keras.layers.merge import Concatenate
+from keras.layers import merge
 from keras.models import Model
 from keras.utils import np_utils
 from gensim.models import Word2Vec
@@ -15,9 +17,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report
 EMB_DIM = 300
 MAX_NB_WORDS=20000
-MAX_LEN = 5000
-nb_filter = 5
-batch_size = 30
+MAX_LEN = 500
+nb_filter = 50
+batch_size = 100
 epochs = 3
 TRAIN = 0.7
 logging.basicConfig(level=logging.INFO)
@@ -64,6 +66,11 @@ class NNScorer(Scorer):
 			X_train.append([samp[0], self.topics[j], samp[2]])
 			y.append(0)
 			i = i + 1
+		k = list(zip(X_train, y))
+		np.random.shuffle(k)
+		k = list(zip(*k))
+		X_train = k[0]
+		y = k[1]
 		return np.asarray(X_train), y
 
 	def fit_data(self, X, y):
@@ -71,15 +78,21 @@ class NNScorer(Scorer):
 		entities = X[:,1].ravel().tolist()
 		self.MAX_LEN = len(max(texts, key = lambda x:len(x)))
 		self.MAX_LENE = len(max(entities, key = lambda x:len(x)))
-		self.tokenizer = Tokenizer(nb_words=MAX_NB_WORDS)
+		self.tokenizer = Tokenizer(num_words=MAX_NB_WORDS)
 		self.tokenizer.fit_on_texts(texts+entities)
 		self.word_index = self.tokenizer.word_index
 		self.X_train = []
-		print(self.MAX_LEN)
+		self.logger.info("Found %s unique tokens", self.MAX_LEN)
 		self.X_train = []
 		f1 = pad_sequences(self.tokenizer.texts_to_sequences(X[:,2]), MAX_LEN)
 		#f2 = pad_sequences(self.tokenizer.texts_to_sequences(X[:,1]), self.MAX_LENE)
-		self.X_train = np.asarray(f1)
+		f = lambda x: self.get_vector(x)
+		f2 = np.array(list(map(f, X[:,1])))
+		#for idx, x in enumerate(X):
+		#	self.X_train.append(np.array([f1[idx], f2[idx]]))
+		#pdb.set_trace()
+		self.X_train = [f1,f2]
+		self.y = np.array(y)
 
 	def get_train_test(self):
 		t = int(len(self.X_train) * TRAIN)
@@ -113,40 +126,99 @@ class NNScorer(Scorer):
 		X = self.get_single_instances('data/profession.one.sorted', 0b11)
 		X, y = self.get_train_instances(X)
 		self.fit_data(X,y)
-		train_X, train_y, test_X, test_y = self.get_train_test()
-		#self.loadWord2Vec('/home/Btech13/sumit.cs13/GoogleNews-vectors-negative300.bin', True)
+		#train_X, train_y, test_X, test_y = self.get_train_test()
+		self.loadWord2Vec('/home/Btech13/sumit.cs13/GoogleNews-vectors-negative300.bin', True)
 		embedding_matrix = self.get_embedding_matrix()
+		lim = int(len(self.X_train[0])*TRAIN)
 		# answer model
 		branches = []
 		train_xs = []
 		dev_xs = []
 		input_shape = (MAX_LEN, EMB_DIM)
-		context_input = Input(shape=input_shape)
-		emb = Embedding(len(self.word_index), EMB_DIM, input_length=MAX_LEN, name="embedding")(context_input)
+		context_input = Input(shape=(MAX_LEN,))
+		emb = Embedding(len(self.word_index) + 1, EMB_DIM, input_length=MAX_LEN, weights=[embedding_matrix],name="embedding")(context_input)
+		emb = Dropout(0.2)(emb)
 		conv_blocks = []
 		for sz in [2,3]:
 			conv = Convolution1D(
 						filters=nb_filter,
+						kernel_size=sz,
 						padding='valid',
 						activation='relu',
-						subsample_length=1)
+						strides=1,
+						input_shape=input_shape)(emb)
 			conv = GlobalMaxPooling1D()(conv)
+			#conv = Flatten()(conv)
 			conv_blocks.append(conv)
 		z = Concatenate()(conv_blocks) if len(conv_blocks) > 1 else conv_blocks[0]
 		
 		# define input for entity vector
 		ent_input = Input(shape=(300,), dtype='float32', name='ent_input')
 		# merge entity vector input with CNN output on context
-		x = merge([z, ent_input], mode='concat', name='merged_layer')
+		x = concatenate([z, ent_input], name='merged_layer')
 		# Stack a fully connected deep network
-		x = Dense(64, activation='relu', name='dense_one')(x)
+		x = Dense(512, activation='relu', name='dense_one')(x)
+		x = Dropout(0.4)(x)
+		x = Dense(64, activation='relu', name='dense_two')(x)
+		x = Dropout(0.4)(x)
 		loss = Dense(1, activation='sigmoid', name='output')(x)
-		model = Model(input=[context_input, ent_input], outputs=loss)
+		model = Model(inputs=[context_input, ent_input], outputs=loss)
+		model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+		#print(model.get_layer('merged_layer').output_shape)
+		#pdb.set_trace()
+		model.fit([self.X_train[0][0:lim], self.X_train[1][0:lim]], self.y[:lim],
+			batch_size=batch_size,
+			epochs=epochs,
+			validation_data=([self.X_train[0][lim:], self.X_train[1][lim:]], self.y[lim:])
+			)
+
+	def build_model2(self):
+		X = self.get_single_instances('data/profession.one.sorted', 0b11)
+		X, y = self.get_train_instances(X)
+		self.fit_data(X,y)
+		#self.loadWord2Vec('/home/Btech13/sumit.cs13/GoogleNews-vectors-negative300.bin', True)
+		embedding_matrix = self.get_embedding_matrix()
+		lim = int(len(self.X_train[0])*TRAIN)
+		input_shape = (MAX_LEN, EMB_DIM)
+		context_input = Input(shape=(MAX_LEN,))
+		emb = Embedding(len(self.word_index) + 1, EMB_DIM, input_length=MAX_LEN, weights=[embedding_matrix],name="embedding", trainable=True)(context_input)
+		reshape = Reshape((MAX_LEN,EMB_DIM,1))(emb)
+		
+		conv_blocks = []
+		for sz in [2]:
+			conv = Convolution2D(
+						nb_filter,
+						(sz,EMB_DIM),
+						strides=(1,1),
+						padding='valid',
+						activation='relu',
+						dim_ordering='tf')(reshape)
+			conv = GlobalMaxPooling2D()(conv)
+			#conv = MaxPooling2D(pool_size=(MAX_LEN - sz + 1, 1), strides=(1,1), border_mode='valid', dim_ordering='tf')(conv)
+			#conv = Flatten()(conv)
+			conv_blocks.append(conv)
+		z = Concatenate(name='conv_layer')(conv_blocks) if len(conv_blocks) > 1 else conv_blocks[0]
+		z = Dense(300, activation='relu', name='conv_dense')(z)
+		# define input for entity vector
+		ent_input = Input(shape=(300,), dtype='float32', name='ent_input')
+		# merge entity vector input with CNN output on context
+		x = concatenate([z, ent_input], name='merged_layer')
+		# Stack a fully connected deep network
+		x = Dense(500, activation='relu', name='dense_one')(x)
+		x = Dropout(0.4)(x)
+		loss = Dense(1, activation='sigmoid', name='output')(x)
+		model = Model(inputs=[context_input, ent_input], outputs=loss)
 		model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 		print(model.get_layer('merged_layer').output_shape)
+		#pdb.set_trace()
+		#model.fit([self.X_train[0][0:lim], self.X_train[1][0:lim]], self.y[:lim],
+		#	batch_size=batch_size,
+		#	epochs=epochs,
+		#	validation_data=([self.X_train[0][lim:], self.X_train[1][lim:]], self.y[lim:])
+		#	)
 
 	def get_vector(self, word):
-		vec = np.zeros((1,EMB_DIM))
+		vec = np.zeros((EMB_DIM,))
 		if not self.w2v:
 			return vec
 		words = word.split()
