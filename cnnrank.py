@@ -1,6 +1,8 @@
 from scorer import Scorer
 import numpy as np
 import logging
+import theano
+import ipdb
 import pdb, os, inflect, argparse
 from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
@@ -8,19 +10,20 @@ from keras.models import Sequential
 from keras.layers import Dense, Dropout, Activation, Input
 from keras.layers import Embedding, Flatten, concatenate, Reshape
 from keras.layers import Convolution1D, MaxPooling1D, Merge, GlobalMaxPooling1D, Convolution2D, MaxPooling2D, GlobalMaxPooling2D
-from keras.layers.merge import Concatenate
+from keras.layers.merge import Concatenate, Dot
 from keras.layers import merge
 from keras.models import Model
 from keras.utils import np_utils
 from gensim.models import Word2Vec
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report
+from keras.models import model_from_json
 EMB_DIM = 300
 MAX_NB_WORDS=20000
 MAX_LEN = 500
 nb_filter = 50
 batch_size = 100
-epochs = 3
+epochs = 4
 TRAIN = 0.7
 logging.basicConfig(level=logging.INFO)
 class NNScorer(Scorer):
@@ -42,11 +45,11 @@ class NNScorer(Scorer):
 						take = fm % 2
 						fm = int(fm / 2)
 						if take == 1:
-							text += l[idx]
+							text += l[idx][0:MAX_LEN]
 						idx += 1
 					X.append([l[0], l[1], text])
 				except:
-					pdb.set_trace()
+					ipdb.set_trace()
 		return X
 
 	def get_train_instances(self, X):
@@ -76,7 +79,8 @@ class NNScorer(Scorer):
 	def fit_data(self, X, y):
 		texts = X[:,2].ravel().tolist()
 		entities = X[:,1].ravel().tolist()
-		self.MAX_LEN = len(max(texts, key = lambda x:len(x)))
+		#self.MAX_LEN = len(max(texts, key = lambda x:len(x)))
+		self.MAX_LEN = MAX_LEN * 2
 		self.MAX_LENE = len(max(entities, key = lambda x:len(x)))
 		self.tokenizer = Tokenizer(num_words=MAX_NB_WORDS)
 		self.tokenizer.fit_on_texts(texts+entities)
@@ -84,13 +88,13 @@ class NNScorer(Scorer):
 		self.X_train = []
 		self.logger.info("Found %s unique tokens", self.MAX_LEN)
 		self.X_train = []
-		f1 = pad_sequences(self.tokenizer.texts_to_sequences(X[:,2]), MAX_LEN)
-		#f2 = pad_sequences(self.tokenizer.texts_to_sequences(X[:,1]), self.MAX_LENE)
-		f = lambda x: self.get_vector(x)
-		f2 = np.array(list(map(f, X[:,1])))
+		f1 = pad_sequences(self.tokenizer.texts_to_sequences(X[:,2]), self.MAX_LEN)
+		f2 = pad_sequences(self.tokenizer.texts_to_sequences(X[:,1]), self.MAX_LENE)
+		#f = lambda x: self.get_vector(x)
+		#f2 = np.array(list(map(f, X[:,1])))
 		#for idx, x in enumerate(X):
 		#	self.X_train.append(np.array([f1[idx], f2[idx]]))
-		#pdb.set_trace()
+		#ipdb.set_trace()
 		self.X_train = [f1,f2]
 		self.y = np.array(y)
 
@@ -126,17 +130,12 @@ class NNScorer(Scorer):
 		X = self.get_single_instances('data/profession.one.sorted', 0b11)
 		X, y = self.get_train_instances(X)
 		self.fit_data(X,y)
-		#train_X, train_y, test_X, test_y = self.get_train_test()
 		self.loadWord2Vec('/home/Btech13/sumit.cs13/GoogleNews-vectors-negative300.bin', True)
 		embedding_matrix = self.get_embedding_matrix()
 		lim = int(len(self.X_train[0])*TRAIN)
-		# answer model
-		branches = []
-		train_xs = []
-		dev_xs = []
-		input_shape = (MAX_LEN, EMB_DIM)
-		context_input = Input(shape=(MAX_LEN,))
-		emb = Embedding(len(self.word_index) + 1, EMB_DIM, input_length=MAX_LEN, weights=[embedding_matrix],name="embedding")(context_input)
+		input_shape = (self.MAX_LEN, EMB_DIM)
+		context_input = Input(shape=(self.MAX_LEN,))
+		emb = Embedding(len(self.word_index) + 1, EMB_DIM, input_length=self.MAX_LEN, weights=[embedding_matrix],name="embedding")(context_input)
 		emb = Dropout(0.2)(emb)
 		conv_blocks = []
 		for sz in [2,3]:
@@ -150,28 +149,111 @@ class NNScorer(Scorer):
 			conv = GlobalMaxPooling1D()(conv)
 			#conv = Flatten()(conv)
 			conv_blocks.append(conv)
-		z = Concatenate()(conv_blocks) if len(conv_blocks) > 1 else conv_blocks[0]
-		
+		z = Concatenate(name='conv_layer')(conv_blocks) if len(conv_blocks) > 1 else conv_blocks[0]
+		#z = Dense(64, activation='relu', name='conv_dense')(z)
+
 		# define input for entity vector
-		ent_input = Input(shape=(300,), dtype='float32', name='ent_input')
+		#ent_inp = Input(shape=(300,), dtype='float32', name='ent_input')
+		ent_inp = Input(shape=(self.MAX_LENE,), dtype='float32', name='ent_input')
+		ent_emb = Embedding(len(self.word_index) + 1, EMB_DIM, input_length=self.MAX_LENE, weights=[embedding_matrix],name="ent_embedding")(ent_inp)
+		conv_ent = Convolution1D(
+					filters=3,
+					kernel_size=2,
+					padding='valid',
+					activation='relu',
+					strides=1,
+					input_shape=input_shape)(ent_emb)
+		conv_ent = GlobalMaxPooling1D()(conv_ent)
+		#ent = Dense(64, activation='relu', name='ent_dense')(ent_inp)
 		# merge entity vector input with CNN output on context
-		x = concatenate([z, ent_input], name='merged_layer')
+		x = concatenate([z, conv_ent], name='merged_layer')
+		#x = Dot(1 , name='merged_layer')([z, ent])
 		# Stack a fully connected deep network
 		x = Dense(512, activation='relu', name='dense_one')(x)
 		x = Dropout(0.4)(x)
 		x = Dense(64, activation='relu', name='dense_two')(x)
-		x = Dropout(0.4)(x)
+		x = Dropout(0.2)(x)
 		loss = Dense(1, activation='sigmoid', name='output')(x)
-		model = Model(inputs=[context_input, ent_input], outputs=loss)
+		model = Model(inputs=[context_input, ent_inp], outputs=loss)
 		model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-		#print(model.get_layer('merged_layer').output_shape)
-		#pdb.set_trace()
+		print(model.get_layer('conv_layer').output_shape)
+		print(model.get_layer('merged_layer').output_shape)
+		#ipdb.set_trace()
 		model.fit([self.X_train[0][0:lim], self.X_train[1][0:lim]], self.y[:lim],
 			batch_size=batch_size,
 			epochs=epochs,
 			validation_data=([self.X_train[0][lim:], self.X_train[1][lim:]], self.y[lim:])
 			)
+		ipdb.set_trace()
+		model_json = model.to_json()
+		with open("cnn_model.json", "w") as json_file:
+			json_file.write(model_json)
+		model.save_weights("cnn_model.h5")
+		print("Saved model to disk")
 
+	def test_cnn_model(self, model_name):
+		X = self.get_single_instances('data/profession.one.sorted', 0b11)
+		X, y = self.get_train_instances(X)
+		self.fit_data(X,y)
+		#self.loadWord2Vec('/home/Btech13/sumit.cs13/GoogleNews-vectors-negative300.bin', True)
+		#embedding_matrix = self.get_embedding_matrix()
+		lim = int(len(self.X_train[0])*TRAIN)
+		
+		json_file = open(model_name+'.json', 'r')
+		loaded_model_json = json_file.read()
+		json_file.close()
+		model = model_from_json(loaded_model_json)
+		model.load_weights(model_name+'.h5')
+		print("Loaded model from disk")
+		model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+		labels = model.predict([self.X_train[0][lim:], self.X_train[1][lim:]])
+		print('predictions done')
+		truth = self.y[lim:]
+		t_l = int(len(truth)*TRAIN)
+		truth_train = truth[:t_l]
+		truth_test = truth[t_l:]
+		clf=None
+		score=0
+		print('fitting Logistic regression')
+		for i, C in enumerate((100, 1, 0.01)):
+		# turn down tolerance for short training time
+			clf_l1_LR = LogisticRegression(C=C, penalty='l1', tol=0.01)
+			clf_l2_LR = LogisticRegression(C=C, penalty='l2', tol=0.01)
+			clf_l1_LR.fit(labels[:t_l], truth_train)
+			clf_l2_LR.fit(labels[:t_l], truth_train)
+			l1=clf_l1_LR.score(labels[t_l:],truth_test)
+			l2=clf_l2_LR.score(labels[t_l:],truth_test)
+			if l1 > score:
+				clf = clf_l1_LR
+				score = l1
+			if l2 > score:
+				clf = clf_l2_LR
+				score = l2
+			print(l1, " ", l2)
+		preds = clf.predict(labels[t_l:]).astype(int)
+		y_test = truth_test.astype(int)
+		print(classification_report(y_test, preds))
+		ipdb.set_trace()
+
+	def regression(self, model_name):
+
+		X = self.get_single_instances('data/profession.one.sorted', 0b11)
+		X, y = self.get_train_instances(X)
+		self.fit_data(X,y)
+		#self.loadWord2Vec('/home/Btech13/sumit.cs13/GoogleNews-vectors-negative300.bin', True)
+		#embedding_matrix = self.get_embedding_matrix()
+		lim = int(len(self.X_train[0])*TRAIN)
+		
+		json_file = open(model_name+'.json', 'r')
+		loaded_model_json = json_file.read()
+		json_file.close()
+		model = model_from_json(loaded_model_json)
+		model.load_weights(model_name+'.h5')
+		print("Loaded model from disk")
+		model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+		ipdb.set_trace()
 	def build_model2(self):
 		X = self.get_single_instances('data/profession.one.sorted', 0b11)
 		X, y = self.get_train_instances(X)
@@ -181,8 +263,8 @@ class NNScorer(Scorer):
 		lim = int(len(self.X_train[0])*TRAIN)
 		input_shape = (MAX_LEN, EMB_DIM)
 		context_input = Input(shape=(MAX_LEN,))
-		emb = Embedding(len(self.word_index) + 1, EMB_DIM, input_length=MAX_LEN, weights=[embedding_matrix],name="embedding", trainable=True)(context_input)
-		reshape = Reshape((MAX_LEN,EMB_DIM,1))(emb)
+		emb = Embedding(len(self.word_index) + 1, EMB_DIM, input_length=MAX_LEN, weights=[embedding_matrix],name="embedding")(context_input)
+		reshape = Reshape((self.MAX_LEN,EMB_DIM,1))(emb)
 		
 		conv_blocks = []
 		for sz in [2]:
@@ -210,7 +292,7 @@ class NNScorer(Scorer):
 		model = Model(inputs=[context_input, ent_input], outputs=loss)
 		model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 		print(model.get_layer('merged_layer').output_shape)
-		#pdb.set_trace()
+		#ipdb.set_trace()
 		#model.fit([self.X_train[0][0:lim], self.X_train[1][0:lim]], self.y[:lim],
 		#	batch_size=batch_size,
 		#	epochs=epochs,
@@ -253,5 +335,7 @@ def main():
 		pairstest = NNScorer.getPersonPairs(input+'/profession.test')
 		nns = NNScorer(topics, pairs, pairstest, 'profession')
 		nns.build_model()
+		#nns.test_cnn_model('cnn_model')
+		#nns.regression('cnn_model')
 if __name__ == "__main__":
 	main()
