@@ -1,0 +1,11 @@
+# Script to remove duplicate entries based on first column
+cut -f 1 data/profession.kb|uniq -d|grep -v -F -f - data/profession.kb>profession.one
+# sort by 2nd field in reverse
+sort -t $'\t' -k2,2rn proout >data/profession.one.sorted
+# stick first column of file1 and second column onwards of file2
+paste file1 file2|awk -F '\t' 'BEGIN{OFS="\t"}{print $1,$4,$5,$6}'
+paste data/profession.one data/profession.one.sorted|awk -F '\t' 'BEGIN{OFS="\t"}{print $1,$2, $4, $5, $6}'>proout
+# remove lines that are not in file1 from file2
+awk 'NR==FNR{a[$0];next} ($0 in a){print}' test1 test2>test3
+# print entries in file2 only in the first column matches with file1
+awk -F '\t' 'NR==FNR{a[$1]=$0;next}; $1 in a {print a[$1]}' file2 file1>out
