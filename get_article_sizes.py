@@ -38,8 +38,8 @@ for line in gzip.open('../corpus/enwiki-20170403-cirrussearch-content.json.gz', 
 			texts = textline['opening_text'].lower()
 			#text=re.sub(r'\[(.*?)\|(.*?)\]',r'\1',textline)
 			text=re.sub(r'[\[\]\:"\.;,]',r'', texts, re.UNICODE)
+			text=re.sub(r'[0-9]+', r' ', text, re.UNICODE)
 			text=re.sub(r'\s+',r' ', text, re.UNICODE)
-			text=re.sub(r'[0-9]*', r' ', text, re.UNICODE)
 			cat = textline['category']
 			catstr = ''
 			if cat:

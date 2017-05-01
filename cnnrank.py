@@ -7,7 +7,7 @@ import pdb, os, inflect, argparse
 from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
 from keras.models import Sequential
-from keras.layers import Dense, Dropout, Activation, Input
+from keras.layers import Dense, Dropout, Activation, Input, LSTM
 from keras.layers import Embedding, Flatten, concatenate, Reshape
 from keras.layers import Convolution1D, MaxPooling1D, Merge, GlobalMaxPooling1D, Convolution2D, MaxPooling2D, GlobalMaxPooling2D
 from keras.layers.merge import Concatenate, Dot
@@ -22,10 +22,10 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_squared_error
 EMB_DIM = 300
 MAX_NB_WORDS=20000
-MAX_LEN = 1000
+MAX_LEN = 2000
 nb_filter = 10
 batch_size = 200
-epochs = 4
+epochs = 7
 TRAIN = 0.7
 logging.basicConfig(level=logging.INFO)
 class NNScorer(Scorer):
@@ -49,7 +49,7 @@ class NNScorer(Scorer):
 						if take == 1:
 							text += l[idx]
 						idx += 1
-					X.append([l[0], l[1], text[100:]])
+					X.append([l[0], l[1], text[50:]])
 				except:
 					ipdb.set_trace()
 		return X
@@ -83,13 +83,14 @@ class NNScorer(Scorer):
 		y = []
 		for p in pairs:
 			if 'opening_text' in self.persons[p[0]]:
-				data.append([p[0], p[1], self.persons[p[0]]['opening_text']])
+				data.append([p[0], p[1], p[2], self.persons[p[0]]['opening_text']])
 				y.append(p[2])
-		X = self.text_to_vectors(np.asarray(data))
-		return X, np.asarray(y, dtype=np.int32)
+		data = np.asarray(data)
+		X = self.text_to_vectors(data)
+		return data[:,0:3], X, np.asarray(y, dtype=np.int32)
 
 	def text_to_vectors(self, X):
-		f1 = pad_sequences(self.tokenizer.texts_to_sequences(X[:,2]), self.MAX_LEN)
+		f1 = pad_sequences(self.tokenizer.texts_to_sequences(X[:,3]), self.MAX_LEN)
 		f2 = pad_sequences(self.tokenizer.texts_to_sequences(X[:,1]), self.MAX_LENE)
 		return [f1,f2]
 
@@ -186,8 +187,8 @@ class NNScorer(Scorer):
 		x = concatenate([z, conv_ent], name='merged_layer')
 		#x = Dot(1 , name='merged_layer')([z, ent])
 		# Stack a fully connected deep network
-		#x = Dense(512, activation='relu', name='dense_one')(x)
-		#x = Dropout(0.4)(x)
+		x = Dense(512, activation='relu', name='dense_one')(x)
+		x = Dropout(0.4)(x)
 		x = Dense(128, activation='relu', name='dense_two')(x)
 		x = Dropout(0.2)(x)
 		loss = Dense(1, activation='sigmoid', name='output')(x)
@@ -201,11 +202,48 @@ class NNScorer(Scorer):
 			validation_data=([self.X_train[0][lim:], self.X_train[1][lim:]], self.y[lim:])
 			)
 		ipdb.set_trace()
+		model_name = 'cnn_model'
 		model_json = model.to_json()
-		with open("cnn_model.json", "w") as json_file:
+		with open(model_name+".json", "w") as json_file:
 			json_file.write(model_json)
-		model.save_weights("cnn_model.h5")
+		model.save_weights(model_name+".h5")
 		print("Saved model to disk")
+
+	def build_lstm(self):	
+		X = self.get_single_instances('data/profession.one.sorted', 0b11)
+		X, y = self.get_train_instances(X)
+		self.fit_data(X,y)
+		self.loadWord2Vec('/home/Btech13/sumit.cs13/GoogleNews-vectors-negative300.bin', True)
+		embedding_matrix = self.get_embedding_matrix()
+		lim = int(len(self.X_train[0])*TRAIN)
+		input_shape = (self.MAX_LEN, EMB_DIM)
+		context_input = Input(shape=(self.MAX_LEN,))
+		emb = Embedding(len(self.word_index) + 1, EMB_DIM, input_length=self.MAX_LEN, weights=[embedding_matrix],name="embedding")(context_input)
+		emb = Dropout(0.2)(emb)
+		lstm_out = LSTM(32)(emb)
+		#auxiliary_output = Dense(1, activation='sigmoid', name='aux_output')(lstm_out)
+		ent_inp = Input(shape=(self.MAX_LENE,), name='ent_input')
+		ent_emb = Embedding(len(self.word_index) + 1, EMB_DIM, input_length=self.MAX_LENE, weights=[embedding_matrix],name="ent_embedding")(ent_inp)
+		conv_ent = Convolution1D(
+					filters=3,
+					kernel_size=2,
+					padding='valid',
+					activation='relu',
+					strides=1,
+					input_shape=input_shape)(ent_emb)
+		conv_ent = GlobalMaxPooling1D()(conv_ent)
+		x = concatenate([lstm_out, conv_ent])
+		x = Dense(64, activation='relu')(x)
+		x = Dense(64, activation='relu')(x)
+		main_output = Dense(1, activation='sigmoid', name='main_output')(x)
+		model = Model(inputs=[context_input, ent_inp], outputs=main_output)
+		model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+		model.fit([self.X_train[0][0:lim], self.X_train[1][0:lim]], self.y[:lim],
+					epochs=epochs, batch_size=batch_size,
+					validation_data=([self.X_train[0][lim:], self.X_train[1][lim:]],
+							self.y[lim:])
+					)
+
 
 	def test_cnn_model(self, model_name):
 		X = self.get_single_instances('data/profession.one.sorted', 0b11)
@@ -267,11 +305,12 @@ class NNScorer(Scorer):
 		model.layers.pop()
 		model_new = Model(model.input, model.layers[-1].output)
 		model_new.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+		model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
 		
 		self.persons = Scorer.getWikipediaTexts2(self.persons)
-		X_train, y_train = self.vectorize_persons(self.pairs)
+		pairs_train, X_train, y_train = self.vectorize_persons(self.pairs)
 
-		X_test, y_test = self.vectorize_persons(self.pairstest)
+		pairs_test, X_test, y_test = self.vectorize_persons(self.pairstest)
 		X2_train = model_new.predict([X_train[0], X_train[1]])
 		X2_test = model_new.predict([X_test[0], X_test[1]])
 		est = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1,
@@ -279,7 +318,9 @@ class NNScorer(Scorer):
 		pairstest = np.asarray(self.pairstest)
 		classes = est.predict(X2_test)
 		ipdb.set_trace()
-		pairstest = np.hstack((pairstest, np.array([classes])))
+		classes = classes.reshape((len(classes),1))
+		pairstest = np.hstack((pairs_test, classes))
+		self.writeScore('preds', pairstest)
 		print(mean_squared_error(y_test, classes))
 
 
@@ -319,8 +360,9 @@ def main():
 		pairs = NNScorer.getPersonPairs(input+'/profession.train')
 		pairstest = NNScorer.getPersonPairs(input+'/profession.test')
 		nns = NNScorer(topics, pairs, pairstest, 'profession')
-		nns.build_model()
-		#nns.test_cnn_model('cnn_model')
+		#nns.build_model()
+		#nns.test_cnn_model('cnn_model2')
 		#nns.regression('cnn_model')
+		nns.build_lstm()
 if __name__ == "__main__":
 	main()

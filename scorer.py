@@ -41,7 +41,7 @@ class Scorer(object):
 		self.eng = inflect.engine()
 		self.logger = logging.getLogger(__name__)
 		self.logger.setLevel(logging.WARNING)
-		for pair in self.pairs:
+		for pair in self.pairs+self.pairstest:
 			if pair[0] not in self.persons:
 				self.persons[pair[0]] = {mode:[pair[1]], 'text':""}
 			else:
@@ -70,12 +70,12 @@ class Scorer(object):
 				return False
 		return self.w2v
 
-	def writeScore(self, out):
+	def writeScore(self, out, pairs):
 		self.logger.info("Writing at:%s", out)
 		outp = open(out, 'w')
-		for line in self.pairs:
+		for line in pairs:
 			l = line
-			outp.write(l[0] + "\t" + l[1] + "\t" + str(int(l[3])) + "\n")
+			outp.write(l[0] + "\t" + l[1] + "\t" + str(l[2]) +"\t" + str(l[3]) + "\n")
 		outp.close()
 
 	def getTopicData(self, ind_file):

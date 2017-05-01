@@ -15,8 +15,8 @@ class MySentences(object):
         for line in open(self.filename, 'r'):
             textline = line.lower()
             text=re.sub(r'\[(.*?)\|(.*?)\]',r'\1',textline)
-            text=re.sub(r'[\[\]\(\)\:"\.;\',]',r'', text)
-            text=re.sub(r'[0-9]*', r'', text)
+            text=re.sub(r'[\[\]\(\)\:"\.;\',]',r' ', text)
+            text=re.sub(r'[0-9]*', r' ', text)
             yield text.split()
 
 if __name__ == '__main__':
@@ -32,7 +32,7 @@ if __name__ == '__main__':
         sys.exit(1)
     inp, outp = sys.argv[1:3]
 
-    model = Word2Vec(MySentences(inp), size = 400, window = 8, min_count = 5,
+    model = Word2Vec(MySentences(inp), size = 100, window = 8, min_count = 5,
                      workers = multiprocessing.cpu_count())
 
     model.init_sims(replace=True)
