@@ -15,8 +15,8 @@ Currently train files are hardcoded. The format for train file is:
 
 The last column could be further tab separated for different text sources.
 
-##Current approaches:
+## Current approaches:
 
 * cnnrank.py is for experiments with CNNs and LSTMs and exploring their usability
 
-For a comprehensive overview of the project head over to the [blog post](blog.sumitasthana.net/ug-research-project) as well as the [poster](blog.sumitasthana.net/resources/ug_thesis_poster.pdf)
+For a comprehensive overview of the project head over to the [blog post](http://blog.sumitasthana.net/ug-research-project) as well as the [poster](http://blog.sumitasthana.net/resources/ug_thesis_poster.pdf)
